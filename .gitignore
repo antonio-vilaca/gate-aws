@@ -1,0 +1,6 @@
+build/
+*.pyc
+*.swp
+sdkconfig
+sdkconfig.old
+.vscode/
