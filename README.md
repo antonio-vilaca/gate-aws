@@ -1,127 +1,98 @@
-ESP-IDF template app
-====================
+# Gate Controller with ESP32
 
-This is a template application to be used with [Espressif IoT Development Framework](https://github.com/espressif/esp-idf).
+![Last update](https://img.shields.io/badge/last%20update-2025--07--07-brightgreen)
 
-Please check [ESP-IDF docs](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for getting started instructions.
+This project implements an automated gate control system using an ESP32, designed to handle opening, closing and safe stopping of a gate.  
+The logic is implemented in C using ESP-IDF, FreeRTOS and GPIO drivers.
 
-*Code in this repository is in the Public Domain (or CC0 licensed, at your option.)
-Unless required by applicable law or agreed to in writing, this
-software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-CONDITIONS OF ANY KIND, either express or implied.*
+---
 
+⚠️ **WARNING**  
+This project involves AC mains electricity.  
+Do **NOT** attempt to build or install it unless you are qualified to work with high-voltage systems.  
+Improper handling can result in serious injury or death.
 
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
+---
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+## 🚀 Features
 
-#include "esp_system.h"
-#include "esp_log.h"
-#include "esp_err.h"
-#include "nvs_flash.h"
+- State machine with `STOPPED`, `OPENING`, `CLOSING` states.
+- Uses `struct` and `enum` to organize gate state data.
+- Handles:
+  - **Button presses on falling edge** to start, stop or reverse movement.
+  - **End-stop sensors** to stop when gate fully open or closed.
+  - **Timeout safety stop** after 15 seconds (150 cycles of 100ms) if end-stop fails.
+- LEDs indicate OPEN and CLOSED positions.
 
-#include "driver/gpio.h"
+---
 
-#include "esp_netif.h"
-#include "esp_event.h"
+## 🔌 Hardware pinout
 
-#include "example_connect.h"  // ajuste se não tiver isso
+| Function                | GPIO |
+|--------------------------|------|
+| Lock relay               | 12   |
+| Boot relay               | 14   |
+| Sensor closed            | 13   |
+| Sensor open              | 19   |
+| LED green                | 33   |
+| LED blue                 | 32   |
+| LED open indicator       | 18   |
+| LED closed indicator     | 17   |
+| Button (external pull-up)| 34   |
+| Motor relay M1           | 27   |
+| Motor relay M2           | 26   |
 
-static const char *TAG = "PORTAO";
+---
 
+## ⚙️ Logic overview
 
-// ------------------- Pin Definitions ------------------- //
-#define PIN_LOCK_RELAY    12
-#define PIN_BOOT_RELAY    14
-#define PIN_SENSOR1       13
-#define PIN_SENSOR2       19
-#define PIN_LED_GREEN     33
-#define PIN_LED_BLUE      32
-#define PIN_LED_OPEN      18
-#define PIN_LED_CLOSED    17
-//-------------------------------------------------------//
+- **When STOPPED:**  
+  - Pressing the button starts moving:
+    - alternates between OPENING and CLOSING each time.
 
-void task_sensores(void *pvParameter)
-{
-    static int estado_ant = -1; // Valor inicial diferente para forçar atualização
+- **When MOVING (OPENING or CLOSING):**  
+  - Pressing the button immediately stops the gate.
 
-    while (1) {
-        // Sensor 1: gate closed
-        int sensor1 = gpio_get_level(PIN_SENSOR1);
-        if(sensor1 == 0) {
-            gpio_set_level(PIN_LED_CLOSED, 1);
-        } else {
-            gpio_set_level(PIN_LED_CLOSED, 0);
-        }
+- **End-stop sensors:**  
+  - Automatically stop the gate when fully open or closed.
 
-        // Sensor 2: gate opened
-        int sensor2 = gpio_get_level(PIN_SENSOR2);
-        if(sensor2 == 0) {
-            gpio_set_level(PIN_LED_OPEN, 1);
-        } else {
-            gpio_set_level(PIN_LED_OPEN, 0);
-        }
+- **Timeout:**  
+  - If the gate is still moving after ~15 seconds, stops for safety.
 
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}
+---
 
-void app_main()
+## 🔄 State machine
 
-{
-    ESP_LOGI(TAG, "[APP] Startup..");
-    ESP_LOGI(TAG, "[APP] Free memory: %"PRIu32" bytes", esp_get_free_heap_size());
-    ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
+- **STOPPED**
+  - button press → OPENING (if odd press)
+  - button press → CLOSING (if even press)
+- **OPENING**
+  - sensor open → STOPPED
+  - timeout → STOPPED
+  - button press → STOPPED
+- **CLOSING**
+  - sensor closed → STOPPED
+  - timeout → STOPPED
+  - button press → STOPPED
 
-    esp_log_level_set("*", ESP_LOG_INFO);
+---
 
-    // Inicializa NVS partition
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ESP_ERROR_CHECK(nvs_flash_init());
-    }
+## 🧭 Code structure
 
-   // Configurar saídas (relés e LEDs)
-    gpio_config_t io_conf_saida = {
-        .pin_bit_mask = (
-            (1ULL << PIN_LOCK_RELAY) |
-            (1ULL << PIN_BOOT_RELAY) |
-            (1ULL << PIN_LED_GREEN)  |
-            (1ULL << PIN_LED_BLUE)   |
-            (1ULL << PIN_LED_OPEN)   |
-            (1ULL << PIN_LED_CLOSED)
-        ),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = 0,
-        .pull_down_en = 0,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&io_conf_saida);
-    gpio_set_level(PIN_LED_GREEN, 0); // starts off
+- Uses:
+  - `typedef enum` to define gate states.
+  - `typedef struct` to group state, counters and last button state.
+- Main logic runs in `task_sensores`, reading inputs and updating outputs every 100ms.
+- Outputs controlled with `gpio_set_level`.
+- Logging via `ESP_LOGI` for debug and monitoring.
 
-    // Configurar entradas (sensores)
-    gpio_config_t io_conf_entrada = {
-        .pin_bit_mask = ( (1ULL << PIN_SENSOR1) | (1ULL << PIN_SENSOR2) ),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = 1,      // Ative o pull-up se seus sensores forem contatos secos (tipo reed switch)
-        .pull_down_en = 0,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&io_conf_entrada);
+---
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+## 🚀 Build & flash
 
-    // Configura Wi-Fi/Ethernet
-    ESP_ERROR_CHECK(example_connect());
+Make sure you have ESP-IDF environment set up. Then:
 
-
-    xTaskCreate(&task_sensores, "task_sensores", 2048, NULL, 5, NULL);
-    xTaskCreate(&task_publica_status, "task_publica_status", 2048, NULL, 5, NULL);
-}
-
-
+```bash
+idf.py menuconfig
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
